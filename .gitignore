@@ -21,6 +21,7 @@ Thumbs.db
 # Trained models
 models/*.pkl
 models/*.joblib
+models/*.pth
 
 # Raw and processed datasets
 data/raw/
