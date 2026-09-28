@@ -1,37 +1,30 @@
 from pathlib import Path
+import sys
 
-import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import torch
 
 from PIL import Image
 from torchvision import transforms
 
 from pytorch_grad_cam import GradCAM
-from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from pytorch_grad_cam.utils.image import show_cam_on_image
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(PROJECT_ROOT / "src"))
 
 from models.resnet18_model import CastingResNet18
 
 
-# -----------------------------------
-# Project paths
-# -----------------------------------
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-DATASET_PATH = (
-    PROJECT_ROOT
-    / "data"
-    / "raw"
-    / "casting_data"
-    / "casting_data"
-    / "test"
-)
-
 MODEL_PATH = PROJECT_ROOT / "models" / "resnet18_best.pth"
 
-RESULTS_PATH = PROJECT_ROOT / "results" / "gradcam"
+RESULTS_PATH = (
+    PROJECT_ROOT
+    / "results"
+    / "gradcam"
+)
 
 RESULTS_PATH.mkdir(
     parents=True,
@@ -39,15 +32,11 @@ RESULTS_PATH.mkdir(
 )
 
 
-# -----------------------------------
-# Image preprocessing
-# -----------------------------------
-
+# Same preprocessing used during ResNet18 training
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.Grayscale(num_output_channels=3),
     transforms.ToTensor(),
-
     transforms.Normalize(
         mean=[0.485, 0.456, 0.406],
         std=[0.229, 0.224, 0.225]
@@ -55,132 +44,108 @@ transform = transforms.Compose([
 ])
 
 
-# -----------------------------------
-# Device
-# -----------------------------------
-
 device = torch.device(
     "cuda" if torch.cuda.is_available() else "cpu"
 )
 
-print("Using device:", device)
 
+def load_model():
 
-# -----------------------------------
-# Load model
-# -----------------------------------
+    model = CastingResNet18().to(device)
 
-model = CastingResNet18().to(device)
-
-model.load_state_dict(
-    torch.load(
-        MODEL_PATH,
-        map_location=device
+    model.load_state_dict(
+        torch.load(
+            MODEL_PATH,
+            map_location=device
+        )
     )
-)
 
-model.eval()
+    model.eval()
 
-
-# -----------------------------------
-# Grad-CAM target layer
-# -----------------------------------
-
-target_layers = [
-    model.model.layer4[-1]
-]
-
-cam = GradCAM(
-    model=model,
-    target_layers=target_layers
-)
+    return model
 
 
-# -----------------------------------
-# Process one image
-# -----------------------------------
+def generate_gradcam(image_path):
 
-def generate_gradcam(
-    image_path,
-    output_path,
-    actual_class
-):
+    image_path = Path(image_path)
 
-    print("\nProcessing:", image_path.name)
+    model = load_model()
 
-    # Load image
-    original_image = Image.open(image_path).convert("L")
+    # -----------------------------
+    # Prepare image
+    # -----------------------------
+
+    original_image = Image.open(
+        image_path
+    ).convert("L")
 
     original_image = original_image.resize(
         (224, 224)
     )
 
-    # Image for visualization
     rgb_image = np.array(
         original_image.convert("RGB")
     ) / 255.0
 
-    # Image for model
     input_image = transform(
         Image.open(image_path)
     ).unsqueeze(0).to(device)
 
 
-    # -----------------------------------
+    # -----------------------------
     # Prediction
-    # -----------------------------------
+    # -----------------------------
 
     with torch.no_grad():
 
         output = model(input_image)
 
-        ok_probability = torch.sigmoid(
+        defective_probability = torch.sigmoid(
             output
         ).item()
 
+    ok_probability = 1 - defective_probability
 
-    defective_probability = 1 - ok_probability
+    if defective_probability >= 0.5:
 
-    prediction = (
-        "OK"
-        if ok_probability >= 0.5
-        else "Defective"
-    )
+        prediction = "Defective"
 
+        confidence = defective_probability
 
-    print("Actual class:", actual_class)
-    print("Prediction:", prediction)
+    else:
 
-    print(
-        "Defective probability:",
-        round(defective_probability, 4)
-    )
+        prediction = "OK"
 
-    print(
-        "OK probability:",
-        round(ok_probability, 4)
-    )
+        confidence = ok_probability
 
 
-    # -----------------------------------
+    # -----------------------------
     # Grad-CAM
-    # -----------------------------------
+    # -----------------------------
 
-    targets = [
-        ClassifierOutputTarget(0)
+    target_layers = [
+        model.model.layer4[-1]
     ]
 
+    cam = GradCAM(
+        model=model,
+        target_layers=target_layers
+    )
+
+    # For our single-output sigmoid model,
+    # use the model output itself as the target.
+    targets = [
+    ClassifierOutputTarget(0)
+]
     grayscale_cam = cam(
         input_tensor=input_image,
         targets=targets
-    )
-
-    grayscale_cam = grayscale_cam[0]
+    )[0]
 
 
-    # -----------------------------------
-    # Overlay heatmap
-    # -----------------------------------
+    # -----------------------------
+    # Create visualization
+    # -----------------------------
 
     visualization = show_cam_on_image(
         rgb_image,
@@ -189,17 +154,22 @@ def generate_gradcam(
     )
 
 
-    # -----------------------------------
-    # Save visualization
-    # -----------------------------------
+    # -----------------------------
+    # Save result
+    # -----------------------------
+
+    output_path = (
+        RESULTS_PATH
+        / f"{image_path.stem}_gradcam.png"
+    )
 
     plt.figure(figsize=(8, 8))
 
     plt.imshow(visualization)
 
     plt.title(
-        f"Actual: {actual_class} | "
-        f"Predicted: {prediction}"
+        f"Predicted: {prediction} | "
+        f"Confidence: {confidence:.2%}"
     )
 
     plt.axis("off")
@@ -214,54 +184,57 @@ def generate_gradcam(
 
     plt.close()
 
+
+    return {
+        "prediction": prediction,
+        "confidence": confidence,
+        "defective_probability": defective_probability,
+        "ok_probability": ok_probability,
+        "gradcam_path": output_path,
+    }
+
+
+if __name__ == "__main__":
+
+    sample_image = (
+        PROJECT_ROOT
+        / "data"
+        / "raw"
+        / "casting_data"
+        / "casting_data"
+        / "test"
+        / "def_front"
+        / "cast_def_0_1059.jpeg"
+    )
+
+    result = generate_gradcam(
+        sample_image
+    )
+
+    print("=== GRAD-CAM EXPLANATION ===")
+    print()
+
     print(
-        "Saved:",
-        output_path
+        "Prediction:",
+        result["prediction"]
     )
 
-
-# -----------------------------------
-# Find example images
-# -----------------------------------
-
-defective_images = list(
-    (DATASET_PATH / "def_front").glob("*.jpeg")
-)
-
-if not defective_images:
-    defective_images = list(
-        (DATASET_PATH / "def_front").glob("*.jpg")
+    print(
+        f"Confidence: "
+        f"{result['confidence']:.2%}"
     )
 
-
-ok_images = list(
-    (DATASET_PATH / "ok_front").glob("*.jpeg")
-)
-
-if not ok_images:
-    ok_images = list(
-        (DATASET_PATH / "ok_front").glob("*.jpg")
+    print(
+        f"Defective probability: "
+        f"{result['defective_probability']:.2%}"
     )
 
+    print(
+        f"OK probability: "
+        f"{result['ok_probability']:.2%}"
+    )
 
-# -----------------------------------
-# Generate both examples
-# -----------------------------------
-
-generate_gradcam(
-    defective_images[0],
-    RESULTS_PATH / "defective_example.png",
-    "Defective"
-)
-
-
-generate_gradcam(
-    ok_images[0],
-    RESULTS_PATH / "ok_example.png",
-    "OK"
-)
-
-
-print("\n" + "=" * 50)
-print("GRAD-CAM RESULTS COMPLETE")
-print("=" * 50)
+    print(
+        "Grad-CAM saved to:",
+        result["gradcam_path"]
+    )

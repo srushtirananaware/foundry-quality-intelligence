@@ -4,3 +4,10 @@ matplotlib
 seaborn
 scikit-learn
 jupyter
+torch
+torchvision
+pytorch-grad-cam
+xgboost
+shap
+sentence-transformers
+ollama

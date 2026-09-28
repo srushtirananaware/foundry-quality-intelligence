@@ -1,6 +1,7 @@
 # Virtual environment
 venv/
 
+
 # Python cache
 __pycache__/
 *.pyc
@@ -26,3 +27,12 @@ models/*.pth
 # Raw and processed datasets
 data/raw/
 data/processed/
+
+#API
+.env
+
+# RAG generated index
+data/rag/
+
+#Generated results
+/results
